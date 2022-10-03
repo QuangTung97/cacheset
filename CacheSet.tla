@@ -3,7 +3,7 @@ EXTENDS TLC, Naturals, Sequences
 
 CONSTANTS Node
 
-MaxValue == 4
+MaxValue == 5
 
 VersionRange == 1..(MaxValue + 2)
 
@@ -17,7 +17,7 @@ VARIABLES pc,
 
 
 db_vars == <<db_version, db_value, log>>
-cache_vars == <<next_lease, cache_version, cache_version_lease, 
+cache_vars == <<next_lease, cache_version, cache_version_lease,
     cache_values, cache_values_lease>>
 local_vars == <<pc, local_version, local_value, local_lease>>
 
@@ -26,7 +26,7 @@ LogEntry == [type: {"Version", "Value"}, key: Nat]
 TypeOK ==
     /\ pc \in [Node -> {
         "Init", "GetDBVersion", "SetCacheVersion",
-        "GetCacheValue", "GetDBValue", "SetCacheValue",
+        "GetCacheValue", "GetLowerCacheValue", "GetDBValue", "SetCacheValue",
         "Terminated"}]
 
     /\ db_version \in Nat
@@ -73,7 +73,13 @@ logEntry(t, k) ==
 UpdateDBValue ==
     /\ db_value < MaxValue
     /\ db_value' = db_value + 1
-    /\ log' = Append(log, logEntry("Value", db_version))
+    /\ IF db_version > 1
+        THEN
+            LET
+                log1 == Append(log, logEntry("Value", db_version - 1))
+            IN log' = Append(log1, logEntry("Value", db_version))
+        ELSE
+            log' = Append(log, logEntry("Value", db_version))
     /\ UNCHANGED db_version
     /\ UNCHANGED <<cache_vars, local_vars, consume_seq>>
 
@@ -82,7 +88,17 @@ UpdateDBValueAndVersion ==
     /\ db_value < MaxValue
     /\ db_value' = db_value + 1
     /\ db_version' = db_version + 1
-    /\ log' = Append(Append(log, logEntry("Version", 0)), logEntry("Value", db_version))
+    /\ IF db_version' > 1
+        THEN
+            LET
+                log1 == Append(log, logEntry("Version", 0))
+                log2 == Append(log1, logEntry("Value", db_version' - 1))
+            IN log' = Append(log2, logEntry("Value", db_version'))
+        ELSE
+            LET
+                log1 == Append(log, logEntry("Version", 0))
+            IN
+            log' = Append(log1, logEntry("Value", db_version'))
     /\ UNCHANGED <<cache_vars, local_vars, consume_seq>>
 
 
@@ -135,13 +151,27 @@ GetCacheValue(n) ==
             /\ cache_values_lease' = [
                 cache_values_lease EXCEPT ![local_version[n]] = next_lease']
             /\ local_lease' = [local_lease EXCEPT ![n] = next_lease']
-            /\ goto(n, "GetLowerCacheValue")
+            /\ IF local_version[n] = 1
+                THEN goto(n, "GetDBValue")
+                ELSE goto(n, "GetLowerCacheValue")
         ELSE
             /\ goto(n, "Terminated")
             /\ UNCHANGED <<local_lease, cache_values_lease, next_lease>>
     /\ UNCHANGED <<local_version>>
     /\ UNCHANGED <<cache_version, cache_version_lease, cache_values>>
     /\ UNCHANGED <<db_vars, consume_seq>>
+
+
+GetLowerCacheValue(n) ==
+    /\ pc[n] = "GetLowerCacheValue"
+    /\ local_value' = [local_value EXCEPT ![n] = cache_values[local_version[n] - 1]]
+    /\ IF local_value'[n] = 0
+        THEN
+            /\ goto(n, "GetDBValue")
+        ELSE
+            /\ goto(n, "SetCacheValue")
+    /\ UNCHANGED <<local_lease, local_version>>
+    /\ UNCHANGED <<cache_vars, db_vars, consume_seq>>
 
 
 GetDBValue(n) ==
@@ -213,6 +243,7 @@ Next ==
         \/ GetDBVersion(n)
         \/ SetCacheVersion(n)
         \/ GetCacheValue(n)
+        \/ GetLowerCacheValue(n)
         \/ GetDBValue(n)
         \/ SetCacheValue(n)
     \/ Consume
