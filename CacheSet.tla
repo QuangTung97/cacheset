@@ -3,19 +3,22 @@ EXTENDS TLC, Naturals, Sequences
 
 CONSTANTS Node
 
-MaxValue == 3
+MaxValue == 4
 
 VersionRange == 1..(MaxValue + 2)
 
 VARIABLES pc,
     db_version, db_value, log,
-    next_lease, cache_version, cache_version_lease, cache_values,
+    next_lease,
+    cache_version, cache_version_lease,
+    cache_values, cache_values_lease,
     local_version, local_value, local_lease,
     consume_seq
 
 
 db_vars == <<db_version, db_value, log>>
-cache_vars == <<next_lease, cache_version, cache_version_lease, cache_values>>
+cache_vars == <<next_lease, cache_version, cache_version_lease, 
+    cache_values, cache_values_lease>>
 local_vars == <<pc, local_version, local_value, local_lease>>
 
 LogEntry == [type: {"Version", "Value"}, key: Nat]
@@ -34,6 +37,7 @@ TypeOK ==
     /\ cache_version \in Nat
     /\ cache_version_lease \in Nat
     /\ cache_values \in [VersionRange -> Nat]
+    /\ cache_values_lease \in [VersionRange -> Nat]
 
     /\ local_version \in [Node -> Nat]
     /\ local_value \in [Node -> Nat]
@@ -53,6 +57,7 @@ Init ==
     /\ cache_version = 0
     /\ cache_version_lease = 0
     /\ cache_values = [v \in VersionRange |-> 0]
+    /\ cache_values_lease = [v \in VersionRange |-> 0]
     
     /\ local_version = [n \in Node |-> 0]
     /\ local_value = [n \in Node |-> 0]
@@ -94,7 +99,7 @@ GetCacheVersion(n) ==
             /\ cache_version_lease' = next_lease'
             /\ local_lease' = [local_lease EXCEPT ![n] = cache_version_lease']
             /\ goto(n, "GetDBVersion")
-            /\ UNCHANGED <<cache_version, cache_values>>
+            /\ UNCHANGED <<cache_version, cache_values, cache_values_lease>>
         ELSE
             /\ goto(n, "GetCacheValue")
             /\ UNCHANGED <<local_lease, cache_vars>>
@@ -118,7 +123,7 @@ SetCacheVersion(n) ==
         ELSE
             /\ UNCHANGED <<cache_version, cache_version_lease>>
     /\ UNCHANGED <<db_vars, local_version, local_value, local_lease,
-        cache_values, next_lease, consume_seq>>
+        cache_values, cache_values_lease, next_lease, consume_seq>>
 
 
 GetCacheValue(n) ==
@@ -126,11 +131,16 @@ GetCacheValue(n) ==
     /\ local_value' = [local_value EXCEPT ![n] = cache_values[local_version[n]]]
     /\ IF local_value'[n] = 0
         THEN
-            /\ goto(n, "GetDBValue")
+            /\ next_lease' = next_lease + 1
+            /\ cache_values_lease' = [
+                cache_values_lease EXCEPT ![local_version[n]] = next_lease']
+            /\ local_lease' = [local_lease EXCEPT ![n] = next_lease']
+            /\ goto(n, "GetLowerCacheValue")
         ELSE
             /\ goto(n, "Terminated")
-    /\ UNCHANGED <<local_lease, local_version>>
-    /\ UNCHANGED <<cache_version, cache_version_lease, cache_values, next_lease>>
+            /\ UNCHANGED <<local_lease, cache_values_lease, next_lease>>
+    /\ UNCHANGED <<local_version>>
+    /\ UNCHANGED <<cache_version, cache_version_lease, cache_values>>
     /\ UNCHANGED <<db_vars, consume_seq>>
 
 
@@ -145,8 +155,12 @@ GetDBValue(n) ==
 SetCacheValue(n) ==
     /\ pc[n] = "SetCacheValue"
     /\ goto(n, "Terminated")
-    /\ cache_values' = [cache_values EXCEPT ![local_version[n]] = local_value[n]]
-
+    /\ IF cache_values_lease[local_version[n]] = local_lease[n]
+        THEN
+            /\ cache_values' = [cache_values EXCEPT ![local_version[n]] = local_value[n]]
+            /\ cache_values_lease' = [cache_values_lease EXCEPT ![local_version[n]] = 0]
+        ELSE
+            /\ UNCHANGED <<cache_values, cache_values_lease>>
     /\ UNCHANGED <<cache_version, cache_version_lease, next_lease>>
     /\ UNCHANGED <<local_lease, local_version, local_value>>
     /\ UNCHANGED <<db_vars, consume_seq>>
@@ -161,9 +175,10 @@ Consume ==
             THEN
                 /\ cache_version' = 0
                 /\ cache_version_lease' = 0
-                /\ UNCHANGED <<cache_values, next_lease>>
+                /\ UNCHANGED <<cache_values, cache_values_lease, next_lease>>
             ELSE
                 /\ cache_values' = [cache_values EXCEPT ![e.key] = 0]
+                /\ cache_values_lease' = [cache_values_lease EXCEPT ![e.key] = 0]
                 /\ UNCHANGED <<cache_version, cache_version_lease, next_lease>>
     /\ UNCHANGED <<db_vars, local_vars>>
 
