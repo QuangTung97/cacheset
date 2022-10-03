@@ -9,14 +9,14 @@ VersionRange == 1..(MaxValue + 2)
 
 VARIABLES pc,
     db_version, db_value, log,
-    next_lease, cache_version, cache_values,
-    local_version, local_value,
+    next_lease, cache_version, cache_version_lease, cache_values,
+    local_version, local_value, local_lease,
     consume_seq
 
 
 db_vars == <<db_version, db_value, log>>
-cache_vars == <<next_lease, cache_version, cache_values>>
-local_vars == <<pc, local_version, local_value>>
+cache_vars == <<next_lease, cache_version, cache_version_lease, cache_values>>
+local_vars == <<pc, local_version, local_value, local_lease>>
 
 LogEntry == [type: {"Version", "Value"}, key: Nat]
 
@@ -29,10 +29,12 @@ TypeOK ==
 
     /\ next_lease \in Nat
     /\ cache_version \in Nat
+    /\ cache_version_lease \in Nat
     /\ cache_values \in [VersionRange -> Nat]
 
     /\ local_version \in [Node -> Nat]
     /\ local_value \in [Node -> Nat]
+    /\ local_lease \in [Node -> Nat]
 
     /\ consume_seq \in Nat
 
@@ -46,10 +48,12 @@ Init ==
 
     /\ next_lease = 0
     /\ cache_version = 0
+    /\ cache_version_lease = 0
     /\ cache_values = [v \in VersionRange |-> 0]
     
     /\ local_version = [n \in Node |-> 0]
     /\ local_value = [n \in Node |-> 0]
+    /\ local_lease = [n \in Node |-> 0]
 
     /\ consume_seq = 0
 
@@ -83,24 +87,34 @@ GetCacheVersion(n) ==
     /\ local_version' = [local_version EXCEPT ![n] = cache_version]
     /\ IF local_version'[n] = 0
         THEN
+            /\ next_lease' = next_lease + 1
+            /\ cache_version_lease' = next_lease'
+            /\ local_lease' = [local_lease EXCEPT ![n] = cache_version_lease']
             /\ goto(n, "GetDBVersion")
+            /\ UNCHANGED <<cache_version, cache_values>>
         ELSE
             /\ goto(n, "Terminated")
-    /\ UNCHANGED <<local_value, cache_vars, db_vars, consume_seq>>
+            /\ UNCHANGED <<local_lease, cache_vars>>
+    /\ UNCHANGED <<local_value, db_vars, consume_seq>>
 
 
 GetDBVersion(n) ==
     /\ pc[n] = "GetDBVersion"
     /\ goto(n, "SetCacheVersion")
     /\ local_version' = [local_version EXCEPT ![n] = db_version]
-    /\ UNCHANGED <<db_vars, cache_vars, local_value, consume_seq>>
+    /\ UNCHANGED <<db_vars, cache_vars, local_value, local_lease, consume_seq>>
 
 
 SetCacheVersion(n) ==
     /\ pc[n] = "SetCacheVersion"
     /\ goto(n, "Terminated")
-    /\ cache_version' = local_version[n]
-    /\ UNCHANGED <<db_vars, local_version, local_value,
+    /\ IF cache_version_lease = local_lease[n]
+        THEN
+            /\ cache_version' = local_version[n]
+            /\ cache_version_lease' = 0
+        ELSE
+            /\ UNCHANGED <<cache_version, cache_version_lease>>
+    /\ UNCHANGED <<db_vars, local_version, local_value, local_lease,
         cache_values, next_lease, consume_seq>>
 
 
@@ -111,10 +125,11 @@ Consume ==
         /\ IF e.type = "Version"
             THEN
                 /\ cache_version' = 0
+                /\ cache_version_lease' = 0
                 /\ UNCHANGED <<cache_values, next_lease>>
             ELSE
                 /\ cache_values' = [cache_values EXCEPT ![e.key] = 0]
-                /\ UNCHANGED <<cache_version, next_lease>>
+                /\ UNCHANGED <<cache_version, cache_version_lease, next_lease>>
     /\ UNCHANGED <<db_vars, local_vars>>
 
 
